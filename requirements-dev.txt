@@ -1,0 +1,16 @@
+# Testing
+pytest>=7.4.0
+pytest-cov>=4.1.0
+pytest-asyncio>=0.21.0
+
+# Linting & Formatting
+ruff>=0.0.280
+black>=23.7.0
+mypy>=1.4.0
+
+# Pre-commit
+pre-commit>=3.3.0
+
+# Notebooks
+jupyter>=1.0.0
+ipykernel>=6.25.0
