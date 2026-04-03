@@ -4,6 +4,12 @@ TrendZap Intelligence API
 FastAPI service for ML model inference.
 """
 
+import hashlib
+import json
+from contextlib import asynccontextmanager
+from typing import Any
+
+import redis.asyncio as aioredis
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -17,10 +23,55 @@ from trendzap_intelligence import (
     settings,
 )
 
+# Redis client (shared across requests)
+_redis: aioredis.Redis | None = None
+AI_CACHE_TTL = 300  # seconds — cache AI analysis results for 5 min
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global _redis
+    try:
+        _redis = aioredis.from_url(settings.redis_url, decode_responses=True)
+        await _redis.ping()
+    except Exception:
+        # Redis is optional — service still works without it
+        _redis = None
+    yield
+    if _redis:
+        await _redis.aclose()
+
+
+def _cache_key(prefix: str, data: dict) -> str:
+    payload = json.dumps(data, sort_keys=True)
+    digest = hashlib.sha256(payload.encode()).hexdigest()[:16]
+    return f"tz:intel:{prefix}:{digest}"
+
+
+async def _get_cached(key: str) -> Any | None:
+    if _redis is None:
+        return None
+    try:
+        raw = await _redis.get(key)
+        return json.loads(raw) if raw else None
+    except Exception:
+        return None
+
+
+async def _set_cached(key: str, value: Any) -> None:
+    if _redis is None:
+        return
+    try:
+        await _redis.setex(key, AI_CACHE_TTL, json.dumps(value))
+    except Exception:
+        pass
+
+
 app = FastAPI(
     title="TrendZap Intelligence API",
     description="ML models for social media virality prediction, powered by Groq AI",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -102,11 +153,19 @@ class AnomalyResponse(BaseModel):
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""
+    redis_ok = False
+    if _redis:
+        try:
+            await _redis.ping()
+            redis_ok = True
+        except Exception:
+            pass
     return {
         "status": "healthy",
         "version": "0.1.0",
         "ai_provider": settings.ai_provider,
         "ai_model": settings.ai_model,
+        "redis": "connected" if redis_ok else "unavailable",
     }
 
 
@@ -227,8 +286,13 @@ class AIAnomalyExplainRequest(BaseModel):
 async def ai_analyze_post(request: AIPostAnalysisRequest):
     """Use Groq AI to analyze a social media post and provide actionable insights."""
     try:
+        key = _cache_key("post", request.model_dump())
+        cached = await _get_cached(key)
+        if cached:
+            return {"provider": settings.ai_provider, "model": settings.ai_model, "analysis": cached, "cached": True}
         result = await ai_analyzer.analyze_post(request.model_dump())
-        return {"provider": settings.ai_provider, "model": settings.ai_model, "analysis": result}
+        await _set_cached(key, result)
+        return {"provider": settings.ai_provider, "model": settings.ai_model, "analysis": result, "cached": False}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -237,8 +301,13 @@ async def ai_analyze_post(request: AIPostAnalysisRequest):
 async def ai_analyze_trend(request: AITrendAnalysisRequest):
     """Use Groq AI to provide deeper insights on a detected trend."""
     try:
+        key = _cache_key("trend", request.model_dump())
+        cached = await _get_cached(key)
+        if cached:
+            return {"provider": settings.ai_provider, "model": settings.ai_model, "analysis": cached, "cached": True}
         result = await ai_analyzer.analyze_trend(request.model_dump())
-        return {"provider": settings.ai_provider, "model": settings.ai_model, "analysis": result}
+        await _set_cached(key, result)
+        return {"provider": settings.ai_provider, "model": settings.ai_model, "analysis": result, "cached": False}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -247,8 +316,13 @@ async def ai_analyze_trend(request: AITrendAnalysisRequest):
 async def ai_explain_anomaly(request: AIAnomalyExplainRequest):
     """Use Groq AI to explain a detected anomaly in human-readable terms."""
     try:
+        key = _cache_key("anomaly", request.model_dump())
+        cached = await _get_cached(key)
+        if cached:
+            return {"provider": settings.ai_provider, "model": settings.ai_model, "analysis": cached, "cached": True}
         result = await ai_analyzer.explain_anomaly(request.model_dump())
-        return {"provider": settings.ai_provider, "model": settings.ai_model, "analysis": result}
+        await _set_cached(key, result)
+        return {"provider": settings.ai_provider, "model": settings.ai_model, "analysis": result, "cached": False}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
