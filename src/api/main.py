@@ -13,11 +13,13 @@ from trendzap_intelligence import (
     EngagementForecaster,
     AnomalyDetector,
     TrendDetector,
+    AIAnalyzer,
+    settings,
 )
 
 app = FastAPI(
     title="TrendZap Intelligence API",
-    description="ML models for social media virality prediction",
+    description="ML models for social media virality prediction, powered by Groq AI",
     version="0.1.0",
 )
 
@@ -33,6 +35,7 @@ virality_predictor = ViralityPredictor()
 engagement_forecaster = EngagementForecaster()
 anomaly_detector = AnomalyDetector()
 trend_detector = TrendDetector()
+ai_analyzer = AIAnalyzer()
 
 
 class ViralityRequest(BaseModel):
@@ -99,7 +102,12 @@ class AnomalyResponse(BaseModel):
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""
-    return {"status": "healthy", "version": "0.1.0"}
+    return {
+        "status": "healthy",
+        "version": "0.1.0",
+        "ai_provider": settings.ai_provider,
+        "ai_model": settings.ai_model,
+    }
 
 
 @app.post("/api/v1/predict/virality", response_model=ViralityResponse)
@@ -178,6 +186,73 @@ async def get_trends():
     }
 
 
+# ---------------------------------------------------------------------------
+# AI-Powered Endpoints (Groq LLM)
+# ---------------------------------------------------------------------------
+
+
+class AIPostAnalysisRequest(BaseModel):
+    """Request body for AI-powered post analysis."""
+
+    platform: str = Field(..., description="Social platform")
+    post_text: str = Field(..., description="Post text content")
+    follower_count: int = Field(0, description="Creator's follower count")
+    current_likes: int = Field(0, description="Current like count")
+    current_shares: int = Field(0, description="Current share count")
+
+
+class AITrendAnalysisRequest(BaseModel):
+    """Request body for AI-powered trend analysis."""
+
+    topic: str = Field(..., description="Trend topic")
+    keywords: list[str] = Field(default_factory=list, description="Related keywords")
+    volume: int = Field(0, description="Number of posts")
+    velocity: float = Field(0.0, description="Posts per hour")
+    platform: str = Field("cross-platform", description="Platform")
+
+
+class AIAnomalyExplainRequest(BaseModel):
+    """Request body for AI anomaly explanation."""
+
+    is_anomaly: bool = Field(..., description="Whether an anomaly was detected")
+    anomaly_score: float = Field(0.0, description="Anomaly score")
+    anomaly_type: str | None = Field(None, description="Type of anomaly")
+    signals: list[str] = Field(default_factory=list, description="Detection signals")
+    engagement_velocity: float = Field(0.0, description="Engagement velocity")
+    engagement_count: int = Field(0, description="Total engagements")
+    follower_count: int = Field(0, description="Follower count")
+
+
+@app.post("/api/v1/ai/analyze-post")
+async def ai_analyze_post(request: AIPostAnalysisRequest):
+    """Use Groq AI to analyze a social media post and provide actionable insights."""
+    try:
+        result = await ai_analyzer.analyze_post(request.model_dump())
+        return {"provider": settings.ai_provider, "model": settings.ai_model, "analysis": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v1/ai/analyze-trend")
+async def ai_analyze_trend(request: AITrendAnalysisRequest):
+    """Use Groq AI to provide deeper insights on a detected trend."""
+    try:
+        result = await ai_analyzer.analyze_trend(request.model_dump())
+        return {"provider": settings.ai_provider, "model": settings.ai_model, "analysis": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v1/ai/explain-anomaly")
+async def ai_explain_anomaly(request: AIAnomalyExplainRequest):
+    """Use Groq AI to explain a detected anomaly in human-readable terms."""
+    try:
+        result = await ai_analyzer.explain_anomaly(request.model_dump())
+        return {"provider": settings.ai_provider, "model": settings.ai_model, "analysis": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host=settings.api_host, port=settings.api_port)
