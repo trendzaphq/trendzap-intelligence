@@ -9,7 +9,7 @@ import json
 import structlog
 from typing import Any
 
-from .config import get_ai_client, settings
+from .config import get_async_ai_client, settings
 
 logger = structlog.get_logger(__name__)
 
@@ -40,9 +40,9 @@ class AIAnalyzer:
 
     @property
     def client(self):
-        """Lazy-initialize the AI client."""
+        """Lazy-initialize the async AI client."""
         if self._client is None:
-            self._client = get_ai_client()
+            self._client = get_async_ai_client()
         return self._client
 
     @property
@@ -77,7 +77,7 @@ Provide your analysis as JSON with these fields:
 - "hashtag_suggestions": list of recommended hashtags"""
 
         try:
-            response = self.client.chat.completions.create(
+            response = await self.client.chat.completions.create(
                 model=self.model,
                 messages=[
                     {"role": "system", "content": SYSTEM_PROMPT},
@@ -130,7 +130,7 @@ Provide your analysis as JSON with these fields:
 - "risk_factors": list of potential risks in engaging with this trend"""
 
         try:
-            response = self.client.chat.completions.create(
+            response = await self.client.chat.completions.create(
                 model=self.model,
                 messages=[
                     {"role": "system", "content": SYSTEM_PROMPT},
@@ -184,7 +184,7 @@ Provide your analysis as JSON with these fields:
 - "confidence_note": note about the confidence level of this detection (string)"""
 
         try:
-            response = self.client.chat.completions.create(
+            response = await self.client.chat.completions.create(
                 model=self.model,
                 messages=[
                     {"role": "system", "content": SYSTEM_PROMPT},

@@ -67,7 +67,7 @@ class EngagementForecaster:
             np.log1p(data.get("follower_count", 0)),
             data.get("hour_of_day", 12) / 24.0,
             data.get("day_of_week", 0) / 7.0,
-            1.0 if data.get("platform") == "twitter" else 0.0,
+            1.0 if data.get("platform") in ("twitter", "x") else 0.0,
             1.0 if data.get("platform") == "tiktok" else 0.0,
             1.0 if data.get("platform") == "instagram" else 0.0,
             1.0 if data.get("platform") == "youtube" else 0.0,

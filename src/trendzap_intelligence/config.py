@@ -111,3 +111,21 @@ def get_ai_client() -> Any:
         client_kwargs["base_url"] = settings.ai_base_url
 
     return OpenAI(**client_kwargs)
+
+
+def get_async_ai_client() -> Any:
+    """Return an AsyncOpenAI-compatible client (non-blocking for async handlers)."""
+    from openai import AsyncOpenAI
+
+    if not settings.ai_api_key:
+        raise ValueError(
+            f"No API key configured for AI provider '{settings.ai_provider}'. "
+            f"Set {'GROQ_API_KEY' if settings.ai_provider == 'groq' else 'OPENAI_API_KEY'} "
+            f"in your .env file."
+        )
+
+    client_kwargs: dict[str, Any] = {"api_key": settings.ai_api_key}
+    if settings.ai_base_url:
+        client_kwargs["base_url"] = settings.ai_base_url
+
+    return AsyncOpenAI(**client_kwargs)

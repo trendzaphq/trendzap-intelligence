@@ -168,7 +168,7 @@ class ViralityPredictor(nn.Module):
             np.log1p(features.get("initial_retweets", 0)),
             features.get("post_hour", 12) / 24.0,
             features.get("day_of_week", 0) / 7.0,
-            1.0 if features.get("platform") == "twitter" else 0.0,
+            1.0 if features.get("platform") in ("twitter", "x") else 0.0,
             1.0 if features.get("platform") == "tiktok" else 0.0,
             1.0 if features.get("platform") == "instagram" else 0.0,
             1.0 if features.get("platform") == "youtube" else 0.0,
