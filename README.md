@@ -1,229 +1,71 @@
 # TrendZap Intelligence
 
-> AI/ML models for predicting social media virality and powering TrendZap's market insights.
+> The AI/ML signal engine behind [TrendZap](https://trendzap.xyz) — a decentralized prediction market for social media virality. Bettors take OVER/UNDER positions on whether posts and trends hit engagement thresholds; this service produces the probability signals, engagement forecasts, and bot-detection that keep those markets priced fairly and resolved honestly.
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![FastAPI](https://img.shields.io/badge/API-FastAPI-009688)](https://fastapi.tiangolo.com/)
+[![LLM](https://img.shields.io/badge/LLM-Groq%20%C2%B7%20Llama%203.3%2070B-f55036)](https://groq.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![ML](https://img.shields.io/badge/ML-scikit--learn-orange)](https://scikit-learn.org/)
-[![DL](https://img.shields.io/badge/DL-PyTorch-red)](https://pytorch.org/)
+
+**Live platform:** [app.trendzap.xyz](https://app.trendzap.xyz) · **Docs:** [docs.trendzap.xyz](https://docs.trendzap.xyz)
 
 ---
 
-## Overview
+## What it does
 
-TrendZap Intelligence provides machine learning models for:
-- **Virality Prediction** - Predict if content will go viral
-- **Engagement Forecasting** - Forecast final engagement metrics
-- **Trend Detection** - Identify emerging trends early
-- **Anomaly Detection** - Detect artificial engagement (bots, coordinated campaigns)
-- **Market Insights** - Power recommendation and pricing systems
+In a prediction market for virality, three questions decide everything:
+
+1. **"Will this post go viral?"** — needed to seed market odds (`/predict/virality` returns a probability and an OVER/UNDER call against a threshold)
+2. **"Where will engagement end up?"** — needed for market creation and pricing (`/predict/engagement` forecasts final counts with confidence bounds)
+3. **"Is this engagement real?"** — needed for fair resolution; bought bots must not settle a market (`/detect/anomaly` flags bot swarms, engagement farms, and coordinated campaigns)
+
+On top of those signal endpoints, a **Groq-powered LLM layer** (Llama 3.3 70B via the OpenAI-compatible SDK) turns raw numbers into human-readable analysis: why a post is likely to move, how long a trend will last, and plain-language explanations of detected anomalies.
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    TrendZap Intelligence                     │
-├─────────────────────────────────────────────────────────────┤
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
-│  │  Virality   │  │ Engagement  │  │     Trend           │  │
-│  │  Predictor  │  │ Forecaster  │  │    Detector         │  │
-│  │   (LSTM)    │  │  (XGBoost)  │  │   (Clustering)      │  │
-│  └──────┬──────┘  └──────┬──────┘  └──────────┬──────────┘  │
-│         │                │                     │             │
-│  ┌──────┴────────────────┴─────────────────────┴──────────┐ │
-│  │                    Feature Engine                       │ │
-│  │  • Post Features    • Account Features    • Time Feat.  │ │
-│  │  • NLP Embeddings   • Network Graph       • Historical  │ │
-│  └────────────────────────────────────────────────────────┘ │
-│                              │                               │
-│  ┌──────────────────────────┴────────────────────────────┐  │
-│  │                     Data Pipeline                      │  │
-│  │    Collect → Clean → Transform → Store → Serve        │  │
-│  └────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────┘
+                        ┌──────────────────────────────┐
+   TrendZap app ──────► │      FastAPI  (src/api)      │ ◄────── trendzap-oracle / risk
+                        └──────────────┬───────────────┘
+                     ┌─────────────────┼──────────────────┐
+                     ▼                 ▼                  ▼
+          ┌──────────────────┐  ┌─────────────┐  ┌────────────────┐
+          │   Model classes  │  │  AIAnalyzer │  │  Redis cache   │
+          │ virality · engmt │  │ Groq LLM    │  │ 5-min TTL,     │
+          │ anomaly · trends │  │ (async)     │  │ degrades       │
+          └──────────────────┘  └─────────────┘  │ gracefully     │
+                                                 └────────────────┘
 ```
 
-## Key Models
+- **Stateless FastAPI service**, containerized with Docker, deployed on **Railway** (health-checked, auto-restarting — see `railway.toml`).
+- **Redis caching** on all LLM endpoints (SHA-256 of the request payload as key, 5-minute TTL). Redis is optional: if it's unreachable the service silently skips the cache instead of failing requests.
+- **Async LLM client** so slow upstream calls never block the event loop.
 
-### 1. Virality Predictor
+## Models
 
-**Goal:** Predict probability of a post crossing a threshold.
+| Model | Approach | Status |
+| ----- | -------- | ------ |
+| `ViralityPredictor` | LSTM + attention over MiniLM sentence embeddings + 15 engineered numerical features (log-scaled engagement, platform one-hots, timing, content signals) | Architecture implemented end-to-end; head not yet trained on production data |
+| `EngagementForecaster` | XGBoost regressor over growth-curve features | Serves a heuristic growth-curve forecast today; XGBoost train/predict path is wired and ready for data |
+| `AnomalyDetector` | Isolation Forest + rule-based signal filters (velocity spikes, new-account ratios, geo clustering, engagement/follower outliers) | Rule-based detection active in production; Isolation Forest path ready for training |
+| `TrendDetector` | TF-IDF vectorization + DBSCAN clustering, ranked by growth velocity | Fully functional (unsupervised — no training required) |
 
-| Feature | Type | Description |
-|---------|------|-------------|
-| Initial velocity | Numeric | First-hour engagement rate |
-| Account followers | Numeric | Creator's follower count |
-| Post embeddings | Vector | BERT text embeddings |
-| Time features | Numeric | Day of week, hour, timezone |
-| Historical performance | Numeric | Creator's past viral rate |
+> **Honest status:** the platform is pre-training-data. Models that need supervised training ship as complete architectures with deterministic heuristic fallbacks, and the production insights users see today come from those heuristics plus the Groq analysis layer. Collecting labeled engagement outcomes from live markets — and training on them — is the next milestone (see [Roadmap](#roadmap)).
 
-**Architecture:** LSTM + Attention mechanism
-**Performance:** 78% accuracy on viral/non-viral classification
-
-### 2. Engagement Forecaster
-
-**Goal:** Predict final engagement count given current state.
-
-**Features:**
-- Current engagement metrics
-- Time elapsed / time remaining
-- Growth velocity curve
-- Seasonal patterns
-- Content type
-
-**Architecture:** Gradient Boosting (XGBoost)
-**Performance:** RMSE of 0.15 (log-scale)
-
-### 3. Anomaly Detector
-
-**Goal:** Identify artificial/bot engagement.
-
-**Signals:**
-- Engagement velocity spikes
-- Account age distribution
-- Geographic anomalies
-- Coordination patterns
-- Engagement-to-follower ratios
-
-**Architecture:** Isolation Forest + Rule-based filters
-
-## Quick Start
-
-### Prerequisites
-
-- Python 3.11+
-- pip or conda
-- 8GB+ RAM (16GB recommended for training)
-- GPU optional (speeds up LSTM training)
-
-### Installation
-
-```bash
-# Clone the repository
-git clone https://github.com/trendzaphq/trendzap-intelligence.git
-cd trendzap-intelligence
-
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Install development dependencies
-pip install -r requirements-dev.txt
-```
-
-### Running Inference
-
-```python
-from trendzap_intelligence import ViralityPredictor
-
-# Load pre-trained model
-predictor = ViralityPredictor.load('models/virality_v1.pt')
-
-# Predict virality probability
-result = predictor.predict({
-    'platform': 'twitter',
-    'post_text': 'Just launched our new product! 🚀',
-    'follower_count': 50000,
-    'initial_likes': 500,
-    'initial_retweets': 100,
-    'post_hour': 14,
-    'day_of_week': 2,
-})
-
-print(f"Viral probability: {result.probability:.2%}")
-# Viral probability: 67.32%
-```
-
-### Training Models
-
-```bash
-# Download training data
-python scripts/download_data.py
-
-# Train virality predictor
-python scripts/train_virality.py --epochs 50 --batch-size 64
-
-# Train engagement forecaster
-python scripts/train_forecaster.py --model xgboost
-
-# Evaluate models
-python scripts/evaluate.py --model all
-```
-
-## Project Structure
-
-```
-trendzap-intelligence/
-├── src/
-│   ├── trendzap_intelligence/
-│   │   ├── __init__.py
-│   │   ├── models/
-│   │   │   ├── virality_predictor.py
-│   │   │   ├── engagement_forecaster.py
-│   │   │   ├── trend_detector.py
-│   │   │   └── anomaly_detector.py
-│   │   ├── features/
-│   │   │   ├── extractor.py
-│   │   │   ├── text_features.py
-│   │   │   ├── account_features.py
-│   │   │   └── time_features.py
-│   │   ├── data/
-│   │   │   ├── loader.py
-│   │   │   ├── preprocessor.py
-│   │   │   └── augmentor.py
-│   │   └── utils/
-│   │       ├── metrics.py
-│   │       └── visualization.py
-│   └── api/
-│       ├── __init__.py
-│       ├── main.py
-│       └── routes/
-├── scripts/
-│   ├── train_virality.py
-│   ├── train_forecaster.py
-│   ├── evaluate.py
-│   └── download_data.py
-├── models/
-│   └── .gitkeep
-├── data/
-│   ├── raw/
-│   └── processed/
-├── notebooks/
-│   ├── 01_eda.ipynb
-│   ├── 02_feature_engineering.ipynb
-│   └── 03_model_experiments.ipynb
-├── tests/
-│   └── test_models.py
-├── requirements.txt
-├── requirements-dev.txt
-├── pyproject.toml
-├── Dockerfile
-└── README.md
-```
-
-## API Service
-
-The intelligence models are exposed via a FastAPI service:
-
-```bash
-# Start the API server
-uvicorn src.api.main:app --reload --port 8000
-```
-
-### Endpoints
+## API
 
 | Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/v1/predict/virality` | POST | Predict viral probability |
-| `/api/v1/predict/engagement` | POST | Forecast final engagement |
-| `/api/v1/detect/anomaly` | POST | Check for artificial engagement |
-| `/api/v1/trends` | GET | Get current trending topics |
-| `/health` | GET | Health check |
+| -------- | ------ | ----------- |
+| `/health` | GET | Health check (reports AI provider, model, Redis status) |
+| `/api/v1/predict/virality` | POST | Viral probability + OVER/UNDER call vs. a threshold |
+| `/api/v1/predict/engagement` | POST | Final engagement forecast with bounds |
+| `/api/v1/detect/anomaly` | POST | Artificial-engagement detection with named signals |
+| `/api/v1/trends` | GET | Detected trending topics |
+| `/api/v1/ai/analyze-post` | POST | LLM analysis: strengths, audience, optimization suggestions |
+| `/api/v1/ai/analyze-trend` | POST | LLM analysis: trend drivers, longevity, opportunities/risks |
+| `/api/v1/ai/explain-anomaly` | POST | LLM plain-language explanation of a detected anomaly |
 
-### Example Request
+### Example
 
 ```bash
 curl -X POST http://localhost:8000/api/v1/predict/virality \
@@ -231,74 +73,112 @@ curl -X POST http://localhost:8000/api/v1/predict/virality \
   -d '{
     "platform": "twitter",
     "post_url": "https://twitter.com/user/status/123",
+    "post_text": "Just launched our new product! 🚀",
+    "follower_count": 50000,
+    "initial_likes": 500,
+    "initial_retweets": 100,
     "threshold": 100000,
     "metric": "likes"
   }'
 ```
 
-## Model Performance
+```bash
+curl -X POST http://localhost:8000/api/v1/ai/analyze-post \
+  -H "Content-Type: application/json" \
+  -d '{
+    "platform": "tiktok",
+    "post_text": "POV: your side project just hit the front page",
+    "follower_count": 12000,
+    "current_likes": 3400,
+    "current_shares": 800
+  }'
+```
 
-### Virality Predictor
-
-| Metric | Value |
-|--------|-------|
-| Accuracy | 78.2% |
-| Precision | 0.76 |
-| Recall | 0.81 |
-| F1 Score | 0.78 |
-| AUC-ROC | 0.84 |
-
-### Engagement Forecaster
-
-| Metric | Value |
-|--------|-------|
-| RMSE (log) | 0.15 |
-| MAE (log) | 0.11 |
-| R² | 0.89 |
-
-## Integration with TrendZap
-
-This repository integrates with:
-
-| Repository | Integration |
-|------------|-------------|
-| `trendzap-oracle` | Sends metrics for anomaly detection |
-| `trendzap-risk` | Provides bot detection signals |
-| `trendzap-app` | Powers market recommendations |
-
-## Contributing
-
-We welcome contributions! Please:
-
-1. Fork the repository
-2. Create a feature branch
-3. Add tests for new functionality
-4. Submit a pull request
-
-### Development Setup
+## Quick start
 
 ```bash
-# Install development dependencies
+git clone https://github.com/trendzaphq/trendzap-intelligence.git
+cd trendzap-intelligence
+
+python -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
+pip install -e .
+
+cp .env.example .env   # add your GROQ_API_KEY
+
+uvicorn src.api.main:app --reload --port 8000
+```
+
+Requires Python 3.11+. Redis is optional (`REDIS_URL` in `.env`) — the service runs without it.
+
+### Docker
+
+```bash
+docker build -t trendzap-intelligence .
+docker run -p 8000:8000 --env-file .env trendzap-intelligence
+```
+
+The image binds to Railway's injected `$PORT` in production and falls back to 8000 locally.
+
+## Project structure
+
+```
+trendzap-intelligence/
+├── src/
+│   ├── trendzap_intelligence/
+│   │   ├── __init__.py
+│   │   ├── config.py              # Settings + Groq/OpenAI client factories (sync & async)
+│   │   ├── ai_analyzer.py         # Groq LLM analysis (posts, trends, anomaly explanations)
+│   │   └── models/
+│   │       ├── virality_predictor.py
+│   │       ├── engagement_forecaster.py
+│   │       ├── anomaly_detector.py
+│   │       └── trend_detector.py
+│   └── api/
+│       └── main.py                # FastAPI app: endpoints, schemas, Redis caching
+├── tests/
+│   └── test_models.py
+├── Dockerfile
+├── railway.toml                   # Railway deploy config (healthcheck, restart policy)
+├── pyproject.toml
+├── requirements.txt
+└── requirements-dev.txt
+```
+
+## Role in the TrendZap platform
+
+| Repository | Relationship |
+| ---------- | ------------ |
+| `trendzap_app` | Frontend consumes the AI analysis endpoints for market insights |
+| `trendzap-oracle` | Engagement metrics feed anomaly detection before market resolution |
+| `trendzap-risk` | Bot-detection signals inform the risk engine |
+| `trendzap-contracts` | Markets settled on-chain (Avalanche) resolve against oracle data this service helps validate |
+
+## Roadmap
+
+- [ ] Data pipeline: collect labeled engagement outcomes from resolved markets
+- [ ] Training scripts + evaluation harness for the virality and forecasting models
+- [ ] Model persistence and versioning (currently `save`/`load` exist on each model class, no registry)
+- [ ] Feature engineering module shared across models
+
+## Development
+
+```bash
 pip install -r requirements-dev.txt
 
-# Run tests
-pytest tests/
-
-# Run linting
-ruff check .
-black --check .
-
-# Run type checking
-mypy src/
+pytest tests/          # tests
+ruff check .           # lint
+black --check .        # format
+mypy src/              # types
 ```
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) for details.
+MIT — see [LICENSE](LICENSE).
 
 ---
 
 <p align="center">
   <strong>TrendZap Intelligence 🧠</strong><br>
-  Predicting virality, one post at a time
+  The signal engine for social prediction markets
 </p>
