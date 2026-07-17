@@ -31,28 +31,37 @@ class Settings:
     """Application settings loaded from environment variables."""
 
     # AI Provider
-    ai_provider: str = field(default_factory=lambda: os.getenv("AI_PROVIDER", "groq"))
+    ai_provider: str = field(
+        default_factory=lambda: os.getenv("AI_PROVIDER", "groq"))
 
     # Groq Configuration
-    groq_api_key: str = field(default_factory=lambda: os.getenv("GROQ_API_KEY", ""))
+    groq_api_key: str = field(
+        default_factory=lambda: os.getenv("GROQ_API_KEY", ""))
     groq_model: str = field(
-        default_factory=lambda: os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+        default_factory=lambda: os.getenv(
+            "GROQ_MODEL", "llama-3.3-70b-versatile")
     )
     groq_base_url: str = field(
-        default_factory=lambda: os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
+        default_factory=lambda: os.getenv(
+            "GROQ_BASE_URL", "https://api.groq.com/openai/v1")
     )
 
     # OpenAI Configuration (fallback)
-    openai_api_key: str = field(default_factory=lambda: os.getenv("OPENAI_API_KEY", ""))
-    openai_model: str = field(default_factory=lambda: os.getenv("OPENAI_MODEL", "gpt-4o"))
+    openai_api_key: str = field(
+        default_factory=lambda: os.getenv("OPENAI_API_KEY", ""))
+    openai_model: str = field(
+        default_factory=lambda: os.getenv("OPENAI_MODEL", "gpt-4o"))
 
     # API Configuration
-    api_host: str = field(default_factory=lambda: os.getenv("API_HOST", "0.0.0.0"))
-    api_port: int = field(default_factory=lambda: int(os.getenv("API_PORT", "8000")))
+    api_host: str = field(
+        default_factory=lambda: os.getenv("API_HOST", "0.0.0.0"))
+    api_port: int = field(default_factory=lambda: int(
+        os.getenv("API_PORT", "8000")))
 
     # Redis
     redis_url: str = field(
-        default_factory=lambda: os.getenv("REDIS_URL", "redis://localhost:6379/0")
+        default_factory=lambda: os.getenv(
+            "REDIS_URL", "redis://localhost:6379/0")
     )
 
     @property
