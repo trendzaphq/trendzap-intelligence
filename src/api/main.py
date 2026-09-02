@@ -6,11 +6,14 @@ FastAPI service for ML model inference.
 
 import hashlib
 import json
+import logging
+import secrets
+import uuid
 from contextlib import asynccontextmanager
 from typing import Any
 
 import redis.asyncio as aioredis
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -67,6 +70,25 @@ async def _set_cached(key: str, value: Any) -> None:
         pass
 
 
+
+logger = logging.getLogger("trendzap.intelligence")
+
+
+def internal_error(exc: Exception, context: str) -> HTTPException:
+    """
+    Log an exception server-side and return an opaque reference to the caller.
+
+    Handlers previously returned `str(e)` directly, which leaks absolute file paths,
+    library internals and — for connection errors — host details.
+    """
+    error_id = uuid.uuid4().hex[:12]
+    logger.exception("[%s] %s failed (error_id=%s)", context, context, error_id)
+    return HTTPException(
+        status_code=500,
+        detail=f"Internal error processing this request (reference: {error_id})",
+    )
+
+
 app = FastAPI(
     title="TrendZap Intelligence API",
     description="ML models for social media virality prediction, powered by Groq AI",
@@ -74,13 +96,42 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# `allow_origins=["*"]` with `allow_credentials=True` is a combination browsers reject
+# outright, so the previous config neither achieved its intent nor restricted anything.
+# Restrict to configured origins and drop credentials, which this API does not use.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=settings.allowed_origins,
+    allow_credentials=False,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type", "X-API-Key", "Authorization"],
 )
+
+
+def require_api_key(
+    x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+    authorization: str | None = Header(default=None),
+) -> None:
+    """
+    Shared-secret guard for the LLM-backed endpoints.
+
+    These forward caller-supplied text to a paid Groq account. With no auth and no
+    rate limiting, anyone who found the service URL could spend the project's LLM
+    budget indefinitely. Fails CLOSED when INTELLIGENCE_API_KEY is unset.
+    """
+    expected = settings.api_key
+    if not expected:
+        raise HTTPException(
+            status_code=503,
+            detail="Service is not configured for authenticated requests",
+        )
+
+    provided = x_api_key
+    if provided is None and authorization and authorization.startswith("Bearer "):
+        provided = authorization[len("Bearer "):]
+
+    if provided is None or not secrets.compare_digest(provided, expected):
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
 virality_predictor = ViralityPredictor()
 engagement_forecaster = EngagementForecaster()
@@ -104,9 +155,13 @@ class ViralityRequest(BaseModel):
 
 class ViralityResponse(BaseModel):
     """Response for virality prediction."""
-    
+
     probability: float
-    confidence: float
+    #: "model" when trained weights are loaded, "heuristic" otherwise. Clients must
+    #: not present a heuristic estimate as a model prediction.
+    method: str
+    #: Spread of the estimate, NOT model certainty. Previously mislabelled "confidence".
+    dispersion: float
     threshold: int
     likely_outcome: str
 
@@ -124,11 +179,16 @@ class EngagementRequest(BaseModel):
 
 class EngagementResponse(BaseModel):
     """Response for engagement forecast."""
-    
+
     predicted_value: int
+    #: Bounds are a fixed +/-20% band around the point estimate, NOT a fitted interval.
+    #: The model previously reported `confidence_interval: 0.95` alongside them, which
+    #: gave a flat multiplier a statistical label it had not earned.
     lower_bound: int
     upper_bound: int
     growth_rate: float
+    #: "model" when trained weights are loaded, "heuristic" otherwise.
+    method: str
 
 
 class AnomalyRequest(BaseModel):
@@ -183,12 +243,13 @@ async def predict_virality(request: ViralityRequest):
         
         return ViralityResponse(
             probability=result.probability,
-            confidence=result.confidence,
+            method=result.method,
+            dispersion=result.dispersion,
             threshold=request.threshold,
             likely_outcome="OVER" if result.probability > 0.5 else "UNDER",
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise internal_error(e, "predict/virality")
 
 
 @app.post("/api/v1/predict/engagement", response_model=EngagementResponse)
@@ -209,9 +270,10 @@ async def predict_engagement(request: EngagementRequest):
             lower_bound=result.lower_bound,
             upper_bound=result.upper_bound,
             growth_rate=result.growth_rate,
+            method="model" if engagement_forecaster.model is not None else "heuristic",
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise internal_error(e, "predict/engagement")
 
 
 @app.post("/api/v1/detect/anomaly", response_model=AnomalyResponse)
@@ -233,7 +295,7 @@ async def detect_anomaly(request: AnomalyRequest):
             signals=result.signals,
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise internal_error(e, "detect/anomaly")
 
 
 @app.get("/api/v1/trends")
@@ -282,7 +344,7 @@ class AIAnomalyExplainRequest(BaseModel):
     follower_count: int = Field(0, description="Follower count")
 
 
-@app.post("/api/v1/ai/analyze-post")
+@app.post("/api/v1/ai/analyze-post", dependencies=[Depends(require_api_key)])
 async def ai_analyze_post(request: AIPostAnalysisRequest):
     """Use Groq AI to analyze a social media post and provide actionable insights."""
     try:
@@ -294,10 +356,10 @@ async def ai_analyze_post(request: AIPostAnalysisRequest):
         await _set_cached(key, result)
         return {"provider": settings.ai_provider, "model": settings.ai_model, "analysis": result, "cached": False}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise internal_error(e, "ai/analyze-post")
 
 
-@app.post("/api/v1/ai/analyze-trend")
+@app.post("/api/v1/ai/analyze-trend", dependencies=[Depends(require_api_key)])
 async def ai_analyze_trend(request: AITrendAnalysisRequest):
     """Use Groq AI to provide deeper insights on a detected trend."""
     try:
@@ -309,10 +371,10 @@ async def ai_analyze_trend(request: AITrendAnalysisRequest):
         await _set_cached(key, result)
         return {"provider": settings.ai_provider, "model": settings.ai_model, "analysis": result, "cached": False}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise internal_error(e, "ai/analyze-trend")
 
 
-@app.post("/api/v1/ai/explain-anomaly")
+@app.post("/api/v1/ai/explain-anomaly", dependencies=[Depends(require_api_key)])
 async def ai_explain_anomaly(request: AIAnomalyExplainRequest):
     """Use Groq AI to explain a detected anomaly in human-readable terms."""
     try:
@@ -324,7 +386,7 @@ async def ai_explain_anomaly(request: AIAnomalyExplainRequest):
         await _set_cached(key, result)
         return {"provider": settings.ai_provider, "model": settings.ai_model, "analysis": result, "cached": False}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise internal_error(e, "ai/explain-anomaly")
 
 
 if __name__ == "__main__":
