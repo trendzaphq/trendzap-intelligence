@@ -18,9 +18,12 @@ class EngagementForecast:
     """Result of an engagement forecast."""
 
     predicted_value: int
+    #: Fixed +/-20% band around the point estimate. Deliberately NOT called a
+    #: confidence interval: the previous `confidence_interval: 0.95` field attached a
+    #: statistical claim to what is a flat multiplier.
     lower_bound: int
     upper_bound: int
-    confidence_interval: float
+    bound_fraction: float
     growth_rate: float
 
 
@@ -150,7 +153,7 @@ class EngagementForecaster:
             predicted_value=predicted,
             lower_bound=lower,
             upper_bound=upper,
-            confidence_interval=0.95,
+            bound_fraction=std_factor,
             growth_rate=growth_rate,
         )
 

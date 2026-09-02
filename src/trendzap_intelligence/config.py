@@ -21,8 +21,12 @@ from typing import Any
 
 from dotenv import load_dotenv
 
-# Load .env from project root
-_env_path = Path(__file__).resolve().parent.parent.parent.parent / ".env"
+# Load .env from the service root (trendzap-intelligence/.env).
+#
+# This used to walk one level too far up, resolving to the *platform* root's .env
+# rather than this service's own, so GROQ_API_KEY and REDIS_URL were never read
+# locally. Production was unaffected only because Railway injects env vars directly.
+_env_path = Path(__file__).resolve().parent.parent.parent / ".env"
 load_dotenv(_env_path)
 
 
@@ -63,6 +67,20 @@ class Settings:
         default_factory=lambda: os.getenv(
             "REDIS_URL", "redis://localhost:6379/0")
     )
+
+    # Shared secret required by the /api/v1/ai/* endpoints. Those forward user text to
+    # a paid Groq account; without this the service was an open, unmetered LLM proxy.
+    api_key: str = field(
+        default_factory=lambda: os.getenv("INTELLIGENCE_API_KEY", ""))
+
+    # Comma-separated browser origins allowed to call this service.
+    # Empty disables cross-origin browser access (server-to-server is unaffected).
+    allowed_origins_raw: str = field(
+        default_factory=lambda: os.getenv("ALLOWED_ORIGINS", ""))
+
+    @property
+    def allowed_origins(self) -> list[str]:
+        return [o.strip() for o in self.allowed_origins_raw.split(",") if o.strip()]
 
     @property
     def ai_model(self) -> str:
